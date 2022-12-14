@@ -1,0 +1,24 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+ujson = "*"
+aiohttp = "==3.8.3"
+fastapi = {extras = ["uvicorn"], version = "*"}
+uvicorn = "*"
+coredis = "*"
+backoff = "*"
+python-dateutil = "*"
+pytz = "*"
+
+[dev-packages]
+pylint = "*"
+black = "*"
+
+[requires]
+python_version = "3.11"
+
+[pipenv]
+allow_prereleases = true

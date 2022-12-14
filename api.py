@@ -13,6 +13,7 @@ import aiohttp
 import ujson as json
 import logging
 import sys
+
 # if sys.platform == 'win32':
 #     loop = asyncio.ProactorEventLoop()
 #     asyncio.set_event_loop(loop)
@@ -20,9 +21,10 @@ import sys
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 VT_API_KEY = os.getenv("VT_API_KEY", "")
-MAX_VT_REQUESTS = int(os.getenv("MAX_VT_REQUESTS", 50))
-MAX_TOTAL_REQUESTS = int(os.getenv("MAX_VT_REQUESTS", 1000))
-LOGGER =  logging.getLogger(__name__)
+MAX_VT_REQUESTS = int(os.getenv("MAX_VT_REQUESTS", 100))
+MAX_TOTAL_REQUESTS = int(os.getenv("MAX_VT_REQUESTS", 500))
+LOGGER = logging.getLogger(__name__)
+
 
 class HashJeevesException(Exception):
     pass
@@ -47,13 +49,16 @@ def chunked_iterable(iterable, size):
             break
         yield chunk
 
+
 async def gather_with_concurrency(n, *coros):
     semaphore = asyncio.Semaphore(n)
 
     async def sem_coro(coro):
         async with semaphore:
             return await coro
+
     return await asyncio.gather(*(sem_coro(c) for c in coros))
+
 
 def vt_exc_check(e: aiohttp.ClientResponseError):
     # https://developers.virustotal.com/reference/errors
@@ -66,7 +71,6 @@ def vt_exc_check(e: aiohttp.ClientResponseError):
 @backoff.on_exception(backoff.expo, (aiohttp.ClientResponseError), giveup=vt_exc_check)
 async def vtfetch(hash: str, apikey: str):
     async with app.vt_semaphore:
-        print("VT")
         url = f"https://www.virustotal.com/api/v3/search"
         headers = {"x-apikey": apikey}
         params = {"query": hash}
@@ -75,32 +79,59 @@ async def vtfetch(hash: str, apikey: str):
 
             j = json.loads(await response.text())
             try:
-                stats = j["data"][0]["attributes"]["last_analysis_stats"]
+                # stats = j["data"][0]["attributes"]["last_analysis_stats"]
                 return j
-            except (AttributeError, IndexError):
+            except (AttributeError, KeyError, IndexError):
                 return None
 
 
-async def fetch_one(hash, apikey, since):
+async def fetch_one(hash, apikey, since, stats_only):
     k = f"hash:{hash}"
-    print(f"K: {k}")
-    rez = await app.redis.hgetall(k)
-    print(f"REZ: {rez}")
-    if rez:
-        ts = datetime.fromtimestamp(int(rez["ts"]), tz=pytz.UTC)
+    retval = {"hash": hash}
+    redis_cache = await app.redis.hgetall(k)
+    if redis_cache:
+        retval['cache']=True
+        ts = datetime.fromtimestamp(int(redis_cache["ts"]), tz=pytz.UTC)
+        retval["ts"] = ts
         if since is None or since <= ts:
             # print("REDIS")
-            return {"hash": hash, "ts": rez["ts"], "stats": json.loads(rez["stats"])}
+            j = json.loads(redis_cache["vtdata"])
+            # print(j)
+            if stats_only:
+                try:
+                    stats = j["data"][0]["attributes"]["last_analysis_stats"]
+                    retval["stats"] = stats
+                except (AttributeError, KeyError, IndexError):
+                    pass
+            else:
+                retval["vtdata"] = j
+            return retval
+            # return {"hash": hash, "ts": rez["ts"], "stats": stats}
 
     # fetch from VT:
-    vtrez = await vtfetch(hash, apikey)
     ts = int(datetime.now(tz=pytz.UTC).timestamp())
-    rez = {"hash": hash, "ts": ts, "stats": json.dumps(vtrez)}
-    await app.redis.hset(k, rez)
-    return rez
+    retval["ts"] = ts
+    retval["cache"]=False
+    vt_results = await vtfetch(hash, apikey)
+    if vt_results:
+        await app.redis.hset(k, {"ts": ts, "vtdata": json.dumps(vt_results)})
+        if stats_only:
+            try:
+                stats = vt_results["data"][0]["attributes"]["last_analysis_stats"]
+                retval["stats"] = stats
+
+            except (AttributeError, KeyError, IndexError):
+                pass
+
+        else:
+            retval["vtdata"] = vt_results
+        # rez = {"hash": hash, "ts": ts, "stats": stats}
+    return retval
 
 
-async def fetchresults(hashes: List[str] | str, apikey: str, since: str = None):
+async def fetchresults(
+    hashes: List[str] | str, apikey: str, since: str = None, stats_only: bool = True
+):
     if type(hashes) == str:
         hashes = [hashes]
     results = {}
@@ -109,14 +140,12 @@ async def fetchresults(hashes: List[str] | str, apikey: str, since: str = None):
         # Ensure out datetime is timestamp aware
         if since.tzinfo is None:
             since.replace(tzinfo=pytz.UTC)
-    results=[]
-    for chunk in chunked_iterable(hashes,MAX_TOTAL_REQUESTS):
-        taskbag = [fetch_one(h, apikey, since) for h in chunk]
-        results.append(await asyncio.gather(*taskbag))
+    results = []
+    for chunk in chunked_iterable(hashes, MAX_TOTAL_REQUESTS):
+        taskbag = [fetch_one(h, apikey, since, stats_only) for h in chunk]
+        results.extend(await asyncio.gather(*taskbag))
     return results
     # results = await gather_with_concurrency(MAX_TOTAL_REQUESTS,*taskbag)
-
-    
 
     # for chunk in chunked_iterable(hashes,MAX_TOTAL_REQUESTS):
     #     for h in chunk:
@@ -127,10 +156,13 @@ async def fetchresults(hashes: List[str] | str, apikey: str, since: str = None):
 @app.post("/api/lookup")
 async def lookup(
     hashes: List[str],
+    stats_only: bool = Query(
+        default=True, description="Return only summary statistics"
+    ),
     since: str | None = Query(default=None, description="Not older than timestamp"),
     x_apikey: str = Header(default=VT_API_KEY),
 ):
-    return await fetchresults(hashes, x_apikey, since=since)
+    return await fetchresults(hashes, x_apikey, since=since, stats_only=stats_only)
 
 
 @app.on_event("startup")
