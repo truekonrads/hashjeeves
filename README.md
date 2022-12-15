@@ -1,6 +1,8 @@
 # hashjeeves
 A caching VirusTotal lookup API
 
+[API spec](https://petstore.swagger.io/?url=https://raw.githubusercontent.com/truekonrads/hashjeeves/main/openapi.json)
+
 ## Running
 ```uvicorn api:app```
 
