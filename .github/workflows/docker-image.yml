@@ -19,8 +19,8 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
     
-    - name: Build the Docker image
-      uses: actions/checkout@v3    
+    - name: Build and push the Docker image
+      uses: docker/build-push-action@v2   
       with:
           platforms: linux/amd64
           tags: |
