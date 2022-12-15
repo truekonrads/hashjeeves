@@ -1,0 +1,33 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    
+    
+    - name: Login to GHCR
+      uses: docker/login-action@v1
+      with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Build the Docker image
+      uses: actions/checkout@v3    
+      with:
+          platforms: linux/amd64
+          tags: |
+            ghcr.io/${{ steps.get-variables.outputs.gh-username-lower }}/hashjeeves:latest
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
