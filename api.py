@@ -25,19 +25,6 @@ MAX_VT_REQUESTS = int(os.getenv("MAX_VT_REQUESTS", 100))
 MAX_TOTAL_REQUESTS = int(os.getenv("MAX_VT_REQUESTS", 500))
 LOGGER = logging.getLogger(__name__)
 
-
-class HashJeevesException(Exception):
-    pass
-
-
-class InvalidAPIKey(HashJeevesException):
-    pass
-
-
-class QuotaExceeded(HashJeevesException):
-    pass
-
-
 import itertools
 
 # https://alexwlchan.net/2018/12/iterating-in-fixed-size-chunks/
