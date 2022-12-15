@@ -26,7 +26,7 @@ jobs:
       with:
           platforms: linux/amd64
           tags: |
-            ghcr.io/${{ steps.get-variables.outputs.gh-username-lower }}/hashjeeves:latest
+            ghcr.io/${{ github.actor }}/hashjeeves:latest
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
