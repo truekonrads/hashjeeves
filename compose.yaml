@@ -1,0 +1,13 @@
+version: "3"
+services:
+  api:
+    build: .
+    image: hashjeeves:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - "REDIS_URL=redis://redis:6379/0"
+    depends_on:
+      - redis      
+  redis:
+    image: redis
