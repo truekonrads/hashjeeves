@@ -11,7 +11,7 @@ VirusTotal has API limits even in the "unlimited" mode, furthermore it takes tim
 [API spec](https://petstore.swagger.io/?url=https://raw.githubusercontent.com/truekonrads/hashjeeves/main/openapi.json)
 
 ## Running
-```uvicorn api:app```
+```uvicorn api:app``` or use docker-compose
 
 ## Configuration via environ
 
@@ -21,3 +21,18 @@ VirusTotal has API limits even in the "unlimited" mode, furthermore it takes tim
 | VT_API_KEY      | (blank)                  | Set default VT key (optional)|
 | MAX_VT_REQUESTS | 100                      | Maximum simultaneous VT requests |
 | MAX_TOTAL_REQUESTS | 500                   | Maximum concurrency limit (set to about 5x of VT ) |
+
+## How to invoke it?
+```python 
+import requests
+
+with open(r"hashes.txt","r") as f:
+    hashes=[x.strip() for x in f]
+
+stats_only="true" # Only return detection stats
+                  # Set to "false" to get back full VT response
+                  
+requests.post(f"http://localhost:8000/api/lookup?stats_only={stats_only}",
+                    json=hashes, 
+                    headers= {'x-apikey': 'my-vt-api-key'})
+```
