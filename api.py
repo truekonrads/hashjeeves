@@ -12,6 +12,7 @@ import pytz
 import aiohttp
 import ujson as json
 import logging
+import uvicorn
 logger = logging.getLogger('uvicorn.debug')
 # if sys.platform == 'win32':
 #     loop = asyncio.ProactorEventLoop()
@@ -56,16 +57,15 @@ def vt_exc_check(e: aiohttp.ClientResponseError):
 
 
 @backoff.on_exception(backoff.expo, (aiohttp.ClientResponseError), giveup=vt_exc_check)
-async def vtfetch(hash: str, apikey: str):
+async def vtfetch(url:str, apikey: str,params:dict):
     # print(f"vtf: {hash}")
     # LOGGER.debug(f"VT fetch {hash}")
     async with app.vt_semaphore:
-        url = f"https://www.virustotal.com/api/v3/files/{hash}"
         headers = {"x-apikey": apikey}
         # params = {"query": hash}
         async with aiohttp.ClientSession(raise_for_status=True) as session:
-            # response = await session.get(url, headers=headers, params=params)
-            response = await session.get(url, headers=headers)
+            response = await session.get(url, headers=headers, params=params)
+            # response = await session.get(url, headers=headers)
 
             j = json.loads(await response.text())
             try:
@@ -76,6 +76,19 @@ async def vtfetch(hash: str, apikey: str):
             finally:
                 pass
                 # print(f"vtf-end: {hash}")
+
+async def vtfetch_file(hash:str,apikey:str):
+    url = f"https://www.virustotal.com/api/v3/files/{hash}"
+    params={}
+    return await vtfetch(url,apikey,params)
+
+async def vtfetch_file_comments(vt_id:str,apikey:str):
+    url = f"https://www.virustotal.com/api/v3/files/{vt_id}/comments"
+    # 40 is the maximum than can be retrieved in one go
+    params={"limit":40}
+    #TODO: implement cursor to fetch > 40 comments
+    return await vtfetch(url,apikey,params)
+
 
 async def fetch_redis_cache(key:str,since:int):
     """
@@ -99,6 +112,7 @@ async def fetch_one(hash, apikey:str, since:int, stats_only:bool,comments:bool):
     k = f"hash:{hash.lower()}"
     retval = {"hash": hash}
     redis_cache = await fetch_redis_cache(k,since)
+    
     if redis_cache:
         
         retval['cache']=True
@@ -110,7 +124,7 @@ async def fetch_one(hash, apikey:str, since:int, stats_only:bool,comments:bool):
         ts = int(datetime.now(tz=pytz.UTC).timestamp())
         retval["ts"] = ts
         retval["cache"]=False
-        vt_results = await vtfetch(hash, apikey)
+        vt_results = await vtfetch_file(hash, apikey)
         if vt_results:
             await app.redis.hset(k, {"ts": ts, "vtdata": json.dumps(vt_results)})
             vt_data=vt_results
@@ -126,6 +140,29 @@ async def fetch_one(hash, apikey:str, since:int, stats_only:bool,comments:bool):
             pass
     else:
         retval["vtdata"] = vt_data
+        
+    if comments:
+        vt_id=vt_data['data']['id']
+        comment_key=f"comment:{vt_id}"
+        redis_cache = await fetch_redis_cache(comment_key,since)
+        if redis_cache:        
+            retval['comment_cache']=True
+            ts = datetime.fromtimestamp(int(redis_cache["ts"]), tz=pytz.UTC)
+            retval["comment_ts"] = ts
+            comment_data=json.loads(redis_cache["vtdata"])
+        else:
+            # fetch from VT:
+            ts = int(datetime.now(tz=pytz.UTC).timestamp())
+            retval["ts"] = ts
+            retval["comment_cache"]=False            
+            comment_data = await vtfetch_file_comments(vt_id, apikey)
+            if comment_data:
+                await app.redis.hset(k, {"ts": ts, "comment": json.dumps(comment_data)})
+            else:
+                raise HTTPException(500,"No VT comment data was returned")
+        retval['comment_data']=comment_data
+
+
         # rez = {"hash": hash, "ts": ts, "stats": stats}
     return retval
 
@@ -184,7 +221,7 @@ async def lookup(
         default=True, description="Return only summary statistics"
     ),
     comments: bool = Query(
-        default=True, description="Fetch and return comments"
+        default=False, description="Fetch and return comments"
     ),
     since: str | None = Query(default=None, description="Not older than timestamp"),
     x_apikey: str = Header(default=VT_API_KEY),
@@ -200,12 +237,13 @@ async def lookup(
 
 @app.on_event("startup")
 async def init():
-    logger.info("initialising redis")
+    logger.debug("initialising redis")
     app.vt_semaphore = asyncio.Semaphore(MAX_VT_REQUESTS)
     app.task_semaphore = asyncio.Semaphore(MAX_TOTAL_REQUESTS)
     app.redis = Redis.from_url(REDIS_URL, decode_responses=True)
     logger.info(await asyncio.wait_for(app.redis.ping("REDIS READY"),2))
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    logger = logging.getLogger('uvicorn.debug')
+    uvicorn.run(app, host="0.0.0.0", port=8000,log_level="debug")
