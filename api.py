@@ -11,8 +11,8 @@ from datetime import datetime
 import pytz
 import aiohttp
 import ujson as json
-# import logging
-
+import logging
+logger = logging.getLogger('uvicorn.debug')
 # if sys.platform == 'win32':
 #     loop = asyncio.ProactorEventLoop()
 #     asyncio.set_event_loop(loop)
@@ -60,11 +60,12 @@ async def vtfetch(hash: str, apikey: str):
     # print(f"vtf: {hash}")
     # LOGGER.debug(f"VT fetch {hash}")
     async with app.vt_semaphore:
-        url = f"https://www.virustotal.com/api/v3/search"
+        url = f"https://www.virustotal.com/api/v3/files/{hash}"
         headers = {"x-apikey": apikey}
-        params = {"query": hash}
+        # params = {"query": hash}
         async with aiohttp.ClientSession(raise_for_status=True) as session:
-            response = await session.get(url, headers=headers, params=params)
+            # response = await session.get(url, headers=headers, params=params)
+            response = await session.get(url, headers=headers)
 
             j = json.loads(await response.text())
             try:
@@ -76,58 +77,62 @@ async def vtfetch(hash: str, apikey: str):
                 pass
                 # print(f"vtf-end: {hash}")
 
+async def fetch_redis_cache(key:str,since:int):
+    """
+    Retrieves cached data from Redis if available and not expired.
+    Args:
+        key (str): The key to retrieve data from Redis.
+        since (int, optional): The timestamp to check if the cached data is expired.
 
-async def fetch_one(hash, apikey, since, stats_only):
-    k = f"hash:{hash}"
+    Returns:
+        dict: The cached data if available and not expired, otherwise None.
+    """
+    redis_cache = await app.redis.hgetall(key)
+    if redis_cache:
+        ts = datetime.fromtimestamp(int(redis_cache["ts"]), tz=pytz.UTC)
+        if since is None or since <= ts:
+            return redis_cache
+    return None
+
+async def fetch_one(hash, apikey:str, since:int, stats_only:bool,comments:bool):
+    # Lowercase the hash for consistency
+    k = f"hash:{hash.lower()}"
     retval = {"hash": hash}
-    redis_cache = await app.redis.hgetall(k)
+    redis_cache = await fetch_redis_cache(k,since)
     if redis_cache:
         
         retval['cache']=True
         ts = datetime.fromtimestamp(int(redis_cache["ts"]), tz=pytz.UTC)
         retval["ts"] = ts
-        if since is None or since <= ts:
-            # print(f"hash:{hash} redis cache hit")
-            # print("REDIS")
-            j = json.loads(redis_cache["vtdata"])
-            # print(j)
-            if stats_only:
-                try:
-                    stats = j["data"][0]["attributes"]["last_analysis_stats"]
-                    retval["stats"] = stats
-                except (AttributeError, KeyError, IndexError):
-                    pass
-            else:
-                retval["vtdata"] = j
-            return retval
+        vt_data=json.loads(redis_cache["vtdata"])
+    else:
+        # fetch from VT:
+        ts = int(datetime.now(tz=pytz.UTC).timestamp())
+        retval["ts"] = ts
+        retval["cache"]=False
+        vt_results = await vtfetch(hash, apikey)
+        if vt_results:
+            await app.redis.hset(k, {"ts": ts, "vtdata": json.dumps(vt_results)})
+            vt_data=vt_results
         else:
+            raise HTTPException(500,"No VT data was returned")
+        
+    if stats_only:
+        try:
+            stats = vt_data["data"]["attributes"]["last_analysis_stats"]
+            retval["stats"] = stats
+
+        except (AttributeError, KeyError, IndexError):
             pass
-            # print(f"hash:{hash} redis cache hit but expired: ts:{ts} / since:{since}")
-            # return {"hash": hash, "ts": rez["ts"], "stats": stats}
-
-    # fetch from VT:
-    ts = int(datetime.now(tz=pytz.UTC).timestamp())
-    retval["ts"] = ts
-    retval["cache"]=False
-    vt_results = await vtfetch(hash, apikey)
-    if vt_results:
-        await app.redis.hset(k, {"ts": ts, "vtdata": json.dumps(vt_results)})
-        if stats_only:
-            try:
-                stats = vt_results["data"][0]["attributes"]["last_analysis_stats"]
-                retval["stats"] = stats
-
-            except (AttributeError, KeyError, IndexError):
-                pass
-
-        else:
-            retval["vtdata"] = vt_results
+    else:
+        retval["vtdata"] = vt_data
         # rez = {"hash": hash, "ts": ts, "stats": stats}
     return retval
 
 
 async def fetchresults(
-    hashes: List[str] | str, apikey: str, since: str = None, stats_only: bool = True
+    hashes: List[str] | str, apikey: str, since: str = None, stats_only: bool = True,
+    comments: bool = False
 ):
     if type(hashes) == str:
         hashes = [hashes]
@@ -154,7 +159,7 @@ async def fetchresults(
         # print(f"hash:{h} waiting to acquire sempahore")
         await app.task_semaphore.acquire()
         # partial(asyncio.create_task,)
-        task=asyncio.create_task(call_after(fetch_one,app.task_semaphore.release,h, apikey,since,stats_only))
+        task=asyncio.create_task(call_after(fetch_one,app.task_semaphore.release,h, apikey,since,stats_only,comments))
         taskbag.append(task)
         # print(f"hash:{h} put task in a bag")
     results.extend(await asyncio.gather(*taskbag))
@@ -178,20 +183,29 @@ async def lookup(
     stats_only: bool = Query(
         default=True, description="Return only summary statistics"
     ),
+    comments: bool = Query(
+        default=True, description="Fetch and return comments"
+    ),
     since: str | None = Query(default=None, description="Not older than timestamp"),
     x_apikey: str = Header(default=VT_API_KEY),
 ):
     try:
-        return await fetchresults(hashes, x_apikey, since=since, stats_only=stats_only)
+        if x_apikey is None or x_apikey=="":
+            logger.error(f"x-apikey is invalid: {x_apikey}")
+        return await fetchresults(hashes, x_apikey, since=since, stats_only=stats_only,comments=comments)
     except Exception as e:
-        # print("here")
+        logger.error(f"Error while looking up hashes: {e}")
         raise HTTPException(500,detail=str(e))
 
 
 @app.on_event("startup")
 async def init():
-    # print("initialising redis")
+    logger.info("initialising redis")
     app.vt_semaphore = asyncio.Semaphore(MAX_VT_REQUESTS)
     app.task_semaphore = asyncio.Semaphore(MAX_TOTAL_REQUESTS)
     app.redis = Redis.from_url(REDIS_URL, decode_responses=True)
-    print(await asyncio.wait_for(app.redis.ping("REDIS READY"),2))
+    logger.info(await asyncio.wait_for(app.redis.ping("REDIS READY"),2))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
