@@ -110,13 +110,13 @@ async def fetch_one(hash, apikey: str, since: int, stats_only: bool, comments: b
     if redis_cache:
 
         retval['cache'] = True
-        ts = datetime.fromtimestamp(int(redis_cache["ts"]), tz=pytz.UTC)
-        retval["ts"] = ts.isoformat()
+        ts = int(redis_cache["ts"])
+        retval["ts"] = ts
         vt_data = json.loads(redis_cache["vtdata"])
     else:
         # fetch from VT:
         ts = int(datetime.now(tz=pytz.UTC).timestamp())
-        retval["ts"] = ts.isoformat()
+        retval["ts"] = ts
         retval["cache"] = False
         vt_results = await vtfetch_file(hash, apikey)
         if vt_results:
