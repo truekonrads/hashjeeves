@@ -21,7 +21,7 @@ logger = logging.getLogger('uvicorn.debug')
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 VT_API_KEY = os.getenv("VT_API_KEY", "")
 MAX_VT_REQUESTS = int(os.getenv("MAX_VT_REQUESTS", 100))
-MAX_TOTAL_REQUESTS = int(os.getenv("MAX_VT_REQUESTS", 500))
+MAX_TOTAL_REQUESTS = int(os.getenv("MAX_TOTAL_REQUESTS", 500))
 
 
 # https://alexwlchan.net/2018/12/iterating-in-fixed-size-chunks/
