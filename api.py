@@ -1,3 +1,4 @@
+from fastapi.responses import Response
 from fastapi.logger import logger
 import itertools
 import uvicorn
@@ -110,12 +111,12 @@ async def fetch_one(hash, apikey: str, since: int, stats_only: bool, comments: b
 
         retval['cache'] = True
         ts = datetime.fromtimestamp(int(redis_cache["ts"]), tz=pytz.UTC)
-        retval["ts"] = ts
+        retval["ts"] = ts.isoformat()
         vt_data = json.loads(redis_cache["vtdata"])
     else:
         # fetch from VT:
         ts = int(datetime.now(tz=pytz.UTC).timestamp())
-        retval["ts"] = ts
+        retval["ts"] = ts.isoformat()
         retval["cache"] = False
         vt_results = await vtfetch_file(hash, apikey)
         if vt_results:
@@ -204,8 +205,17 @@ async def lookup(
 ):
     try:
         if x_apikey is None or x_apikey == "":
-            logger.error(f"x-apikey is invalid: {x_apikey}")
-        return await fetchresults(hashes, x_apikey, since=since, stats_only=stats_only, comments=comments)
+            raise HTTPException(500, detail=f"x-apikey is invalid: {x_apikey}")
+
+        results = await fetchresults(hashes, x_apikey, since=since, stats_only=stats_only, comments=comments)
+
+        # This works around an odd bug where indent=None is not respected in json.dumps
+        ret = json.dumps(results,
+                         separators=(",", ":"),
+                         ensure_ascii=False,
+                         allow_nan=False,
+                         indent=0)
+        return Response(ret, media_type="application/json")
     except Exception as e:
         logger.error(f"Error while looking up hashes: {e}")
         raise HTTPException(500, detail=str(e))
