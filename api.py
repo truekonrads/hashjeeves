@@ -214,7 +214,7 @@ async def lookup(
                          separators=(",", ":"),
                          ensure_ascii=False,
                          allow_nan=False,
-                         indent=0)
+                         ).encode('utf-8',errors='ignore')
         return Response(ret, media_type="application/json")
     except Exception as e:
         logger.error(f"Error while looking up hashes: {e}")
